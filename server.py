@@ -17,16 +17,6 @@ app = sanic.Sanic(__name__)
 app.static('/', './static')
 app.static('/', './static/index.html')
 
-# TODO:
-#  - If connected, buttom prompts to turn off controller
-#  - 2 queues for messages from device_manager:
-#    - existing "device state" queue, push new state on every change, everyone subscribes
-#    - new "message" queue, push message on errors, subscribe on connect/disconnect query even if already in progress
-#    - how does second queue get associated with websocket?
-#  - add tests for exceptions thrown by every call, make sure state is not an "in progress" state after
-
-# FIXME bug: if device exists disconnected, remove device needs to wait for removal to propagate before moving on to scan
-
 @app.before_server_start
 async def start_dbus_client(app, loop):
     app.ctx.device_manager = device_manager.DeviceManager(config.Config().get_devices(), ScanTimeout())

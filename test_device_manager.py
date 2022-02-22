@@ -1,3 +1,4 @@
+import async_mock
 import asyncio
 import device_manager
 import unittest
@@ -6,7 +7,7 @@ import unittest.mock
 
 class DeviceManagerTest(unittest.TestCase):
     def setUp(self):
-        self.loop = asyncio.new_event_loop()
+        self.loop = asyncio.get_event_loop()
         self.scan_timeout = MockTimeout()
         self.here_address = '00:11:22:33:44:55'
         self.there_address = '66:77:88:99:AA:BB'
@@ -31,13 +32,12 @@ class DeviceManagerTest(unittest.TestCase):
         self.devman.add_device(self.here_address, self.here_device, False)
         self.there_device = MockDevice()
         self.devman.add_device(self.there_address, self.there_device, True)
-    
-    def tearDown(self):
-        self.loop.close()
 
-    def run_async(self, *coroutines):
-        tasks = [self.loop.create_task(c) for c in coroutines]
-        self.loop.run_until_complete(asyncio.gather(*tasks))
+    def run_async(self, aw):
+        self.loop.run_until_complete(aw)
+
+    def create_task(self, coro):
+        return self.loop.create_task(coro)
 
     def assert_devices(self, devices, here_state='disconnected', there_state='connected', nowhere_state='disconnected'):
         self.assertEqual(devices, [
@@ -72,7 +72,7 @@ class DeviceManagerTest(unittest.TestCase):
         self.assertEqual(self.there_device.calls, [])
 
     def test_connect_existing(self):
-        self.scan_timeout.on_wait_event = lambda _: self.devman.remove_device(self.here_address)
+        self.scan_timeout.wait_event.side_effect = [lambda *_: self.devman.remove_device(self.here_address)]
         self.run_async(self.devman.connect(self.here_address))
         self.assertEqual(self.adapter.calls, [
             ('remove_device', [self.here_device]),
@@ -85,7 +85,7 @@ class DeviceManagerTest(unittest.TestCase):
 
     def test_connect_appear_during_discovery(self):
         device = MockDevice()
-        self.scan_timeout.on_wait_event = lambda _: self.devman.add_device(self.nowhere_address, device, False)
+        self.scan_timeout.wait_event.side_effect = [lambda *_: self.devman.add_device(self.nowhere_address, device, False)]
         self.run_async(self.devman.connect(self.nowhere_address))
         self.assertEqual(self.adapter.calls, [
             ('set_discovery_filter', [{}]),
@@ -106,10 +106,9 @@ class DeviceManagerTest(unittest.TestCase):
         self.assertEqual(self.there_device.calls, ['disconnect'])
     
     def test_connect_during_connect(self):
-        self.run_async(
-            self.devman.connect(self.nowhere_address),
-            self.devman.connect(self.nowhere_address)
-        )
+        task = self.create_task(self.devman.connect(self.nowhere_address))
+        self.adapter.start_discovery.side_effect = [self.devman.connect(self.nowhere_address)]
+        self.run_async(task)
         self.assertEqual(self.adapter.calls, [
             ('set_discovery_filter', [{}]),
             ('start_discovery', []),
@@ -117,18 +116,16 @@ class DeviceManagerTest(unittest.TestCase):
         ])
     
     def test_disconnect_during_disconnect(self):
-        self.run_async(
-            self.devman.disconnect(self.there_address),
-            self.devman.disconnect(self.there_address)
-        )
+        task = self.create_task(self.devman.disconnect(self.there_address))
+        self.there_device.disconnect.side_effect = [self.devman.disconnect(self.there_address)]
+        self.run_async(task)
         self.assertEqual(self.there_device.calls, ['disconnect'])
 
     def test_connect_two_devices(self):
         self.devman.update_device(self.there_address, False)
-        self.run_async(
-            self.devman.connect(self.here_address),
-            self.devman.connect(self.there_address)
-        )
+        here_task = self.create_task(self.devman.connect(self.here_address))
+        self.adapter.start_discovery.side_effect = [self.devman.connect(self.there_address)]
+        self.run_async(here_task)
         self.assertIn(('remove_device', [self.here_device]), self.adapter.calls)
         self.assertIn(('remove_device', [self.there_device]), self.adapter.calls)
         self.assertIn(('set_discovery_filter', [{}]), self.adapter.calls)
@@ -138,33 +135,34 @@ class DeviceManagerTest(unittest.TestCase):
 
     def test_connect_already_discovered_sets_event(self):
         calls = 0
-        def connect_and_check_event(event):
+        def connect_and_check_event(instance, event):
             nonlocal calls
             calls += 1
             self.assertTrue(event.is_set())
-        self.scan_timeout.on_wait_event = connect_and_check_event
+        self.scan_timeout.wait_event.side_effect = [connect_and_check_event]
         self.run_async(self.devman.connect(self.here_address))
         self.assertEqual(calls, 1)
 
     def test_connect_discovery_sets_event(self):
         calls = 0
-        def connect_and_check_event(event):
+        def connect_and_check_event(instance, event):
             nonlocal calls
             calls += 1
             self.assertFalse(event.is_set())
             self.devman.add_device(self.nowhere_address, MockDevice(), False)
             self.assertTrue(event.is_set())
-        self.scan_timeout.on_wait_event = connect_and_check_event
+        self.scan_timeout.wait_event.side_effect = [connect_and_check_event]
         self.run_async(self.devman.connect(self.nowhere_address))
         self.assertEqual(calls, 1)
 
     def test_connect_lost_device_clears_event(self):
         calls = 0
-        def connect_and_check_event(event):
+        def connect_and_check_event(instance, event):
             nonlocal calls
             calls += 1
             self.assertFalse(event.is_set())
-        self.scan_timeout.on_wait_event = connect_and_check_event
+            raise asyncio.TimeoutError()
+        self.scan_timeout.wait_event.side_effect = [connect_and_check_event]
         self.devman.remove_device(self.there_address)
         self.run_async(self.devman.connect(self.there_address))
         self.assertEqual(calls, 1)
@@ -249,6 +247,7 @@ class MockAdapter:
     async def set_discovery_filter(self, filter={}):
         self.calls.append(('set_discovery_filter', [filter]))
 
+    @async_mock.async_mock_method
     async def start_discovery(self):
         self.calls.append(('start_discovery', []))
 
@@ -266,20 +265,15 @@ class MockDevice:
     async def connect(self):
         self.calls.append('connect')
 
+    @async_mock.async_mock_method
     async def disconnect(self):
         self.calls.append('disconnect')
-        await asyncio.sleep(0)
 
     async def trust(self):
         self.calls.append('trust')
 
 
 class MockTimeout:
+    @async_mock.async_mock_method
     async def wait_event(self, event):
-        await asyncio.sleep(0)
-        self.on_wait_event(event)
         raise asyncio.TimeoutError()
-    
-    @staticmethod
-    def on_wait_event(event):
-        pass
