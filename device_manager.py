@@ -2,9 +2,10 @@ import asyncio
 
 
 class DeviceManager:
-    def __init__(self, devices, scan_timeout):
+    def __init__(self, devices, adapter_timeout, scan_timeout):
         self._adapter = None
         self._devices = {d['address']: Device(**d) for d in devices}
+        self._adapter_timeout = adapter_timeout
         self._scan_timeout = scan_timeout
         self._discovering_clients = 0
         self._subscriber_queues = set()
@@ -16,8 +17,9 @@ class DeviceManager:
             return
         self._publish_state(device, 'connecting')
 
-        if device.dbus_proxy:
+        if device.discovered.is_set():
             await self._adapter.remove_device(device.dbus_proxy)
+            await self._adapter_timeout.wait_event(device.lost)
 
         self._discovering_clients += 1
         if self._discovering_clients == 1:
@@ -69,6 +71,7 @@ class DeviceManager:
             return
         device.dbus_proxy = dbus_proxy
         device.discovered.set()
+        device.lost.clear()
         if connected:
             self._publish_state(device, 'connected')
 
@@ -79,6 +82,7 @@ class DeviceManager:
             return
         self._publish_state(device, 'disconnected')
         device.discovered.clear()
+        device.lost.set()
         device.dbus_proxy = None
 
     def update_device(self, address, connected):
@@ -101,6 +105,8 @@ class Device:
         self.address = address
         self.state = 'disconnected'
         self.discovered = asyncio.Event()
+        self.lost = asyncio.Event()
+        self.lost.set()
         self.dbus_proxy = None
 
     def as_dict(self):

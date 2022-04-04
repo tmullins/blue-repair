@@ -8,6 +8,7 @@ import unittest.mock
 class DeviceManagerTest(unittest.TestCase):
     def setUp(self):
         self.loop = asyncio.get_event_loop()
+        self.adapter_timeout = MockTimeout()
         self.scan_timeout = MockTimeout()
         self.here_address = '00:11:22:33:44:55'
         self.there_address = '66:77:88:99:AA:BB'
@@ -25,7 +26,7 @@ class DeviceManagerTest(unittest.TestCase):
                 'name': 'Nowhere',
                 'address': self.nowhere_address
             }
-        ], self.scan_timeout)
+        ], self.adapter_timeout, self.scan_timeout)
         self.adapter = MockAdapter()
         self.devman.add_adapter(self.adapter)
         self.here_device = MockDevice()
@@ -72,7 +73,7 @@ class DeviceManagerTest(unittest.TestCase):
         self.assertEqual(self.there_device.calls, [])
 
     def test_connect_existing(self):
-        self.scan_timeout.wait_event.side_effect = [lambda *_: self.devman.remove_device(self.here_address)]
+        self.adapter_timeout.wait_event.side_effect = [lambda *_: self.devman.remove_device(self.here_address)]
         self.run_async(self.devman.connect(self.here_address))
         self.assertEqual(self.adapter.calls, [
             ('remove_device', [self.here_device]),
@@ -276,4 +277,4 @@ class MockDevice:
 class MockTimeout:
     @async_mock.async_mock_method
     async def wait_event(self, event):
-        raise asyncio.TimeoutError()
+        pass
