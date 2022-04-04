@@ -7,7 +7,7 @@ import json
 import sanic
 
 
-class ScanTimeout:
+class Timeout:
     async def wait_event(self, event):
         await asyncio.wait_for(event.wait(), 20)
 
@@ -19,7 +19,7 @@ app.static('/', './static/index.html')
 
 @app.before_server_start
 async def start_dbus_client(app, loop):
-    app.ctx.device_manager = device_manager.DeviceManager(config.Config().get_devices(), ScanTimeout())
+    app.ctx.device_manager = device_manager.DeviceManager(config.Config().get_devices(), Timeout(), Timeout())
     app.ctx.bus = bus.Bus()
     await app.ctx.bus.connect()
     app.ctx.bluez_client = await bluez.connect(app.ctx.bus, app.ctx.device_manager)
